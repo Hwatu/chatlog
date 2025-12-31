@@ -8,6 +8,8 @@ import (
 	"io"
 	"os"
 
+	"github.com/rs/zerolog/log"
+
 	"github.com/sjzar/chatlog/internal/errors"
 	"github.com/sjzar/chatlog/internal/wechat/decrypt/common"
 
@@ -94,6 +96,9 @@ func (d *V4Decryptor) Decrypt(ctx context.Context, dbfile string, hexKey string,
 		return errors.ErrDecryptIncorrectKey
 	}
 
+	// 记录 SQLCipher 参数，便于调试（失败不影响解密流程）
+	_ = d.LogSQLCipherKey(dbInfo.Path, hexKey)
+
 	// 计算密钥
 	encKey, macKey := d.deriveKeys(key, dbInfo.Salt)
 
@@ -164,6 +169,39 @@ func (d *V4Decryptor) Decrypt(ctx context.Context, dbfile string, hexKey string,
 			return errors.WriteOutputFailed(err)
 		}
 	}
+
+	return nil
+}
+
+// LogSQLCipherKey 计算并输出指定数据库文件对应的 SQLCipher 原始密钥参数
+// 便于在 DB Browser for SQLite 中使用：
+// PRAGMA cipher_page_size = 4096;
+// PRAGMA kdf_iter = 256000;
+// PRAGMA cipher_hmac_algorithm = HMAC_SHA512;
+// PRAGMA cipher_kdf_algorithm = PBKDF2_HMAC_SHA512;
+// PRAGMA key = "x'<enc_key_hex>'";
+func (d *V4Decryptor) LogSQLCipherKey(dbfile string, hexKey string) error {
+	key, err := hex.DecodeString(hexKey)
+	if err != nil {
+		return errors.DecodeKeyFailed(err)
+	}
+
+	// 仅读取头信息，不解密文件
+	dbInfo, err := common.OpenDBFile(dbfile, d.pageSize)
+	if err != nil {
+		return err
+	}
+
+	encKey, macKey := d.deriveKeys(key, dbInfo.Salt)
+
+	log.Info().
+		Str("db_file", dbInfo.Path).
+		Str("salt_hex", hex.EncodeToString(dbInfo.Salt)).
+		Str("enc_key_hex", hex.EncodeToString(encKey)).
+		Str("mac_key_hex", hex.EncodeToString(macKey)).
+		Int("page_size", d.pageSize).
+		Int("kdf_iter", d.iterCount).
+		Msg("sqlcipher parameters")
 
 	return nil
 }
